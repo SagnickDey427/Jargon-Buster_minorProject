@@ -1,4 +1,3 @@
-// Create the context menu item when the extension is installed
 chrome.runtime.onInstalled.addListener(() => {
     chrome.contextMenus.create({
         id: "bust-jargon",
@@ -7,37 +6,43 @@ chrome.runtime.onInstalled.addListener(() => {
     });
 });
 
-// Listen for clicks on the context menu
-chrome.contextMenus.onClicked.addListener((info, tab) => {
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     if (info.menuItemId === "bust-jargon") {
-        const selectedText = info.selectionText;
+        
+        // Show loading state
+        chrome.tabs.sendMessage(tab.id, { action: "showLoading" });
 
-        // Call your local Express API
-        fetch('http://localhost:3000/api/simplify', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ text: selectedText })
-        })
-        .then(response => response.json())
-        .then(data => {
-            // Manifest V3 background scripts can't use alert() directly.
-            // We have to inject a script into the active tab to show it.
-            chrome.scripting.executeScript({
-                target: { tabId: tab.id },
-                func: (resultText) => {
-                    alert("🎯 JARGON BUSTED:\n\n" + resultText);
-                },
-                args: [data.simplifiedText]
+        try {
+            const response = await fetch('http://localhost:3000/api/simplify', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: info.selectionText })
             });
-        })
-        .catch(error => {
+
+            if (!response.ok) throw new Error("Server error");
+
+            // Tell the UI to clear the "loading" text and prepare for streaming
+            chrome.tabs.sendMessage(tab.id, { action: "startStream" });
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+
+            // Read the stream chunk by chunk
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                const chunk = decoder.decode(value, { stream: true });
+                
+                // Send each word/chunk to the UI instantly
+                chrome.tabs.sendMessage(tab.id, { action: "streamChunk", text: chunk });
+            }
+        } catch (error) {
             console.error('Error:', error);
-            chrome.scripting.executeScript({
-                target: { tabId: tab.id },
-                func: () => alert("Error connecting to the Jargon Buster server.")
+            chrome.tabs.sendMessage(tab.id, { 
+                action: "showError", 
+                text: "Could not connect to the server." 
             });
-        });
+        }
     }
 });
